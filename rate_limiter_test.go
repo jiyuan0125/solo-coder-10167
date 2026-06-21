@@ -459,34 +459,48 @@ func TestRequestRateLimiter(t *testing.T) {
 		assertEqual(t, int32(3), callCount.Load(), "tracking limiter should be called 3 times")
 	})
 
-	t.Run("rate limiter order: request RL then client RL then circuit breaker", func(t *testing.T) {
-		var callOrder atomic.Int32
-		reqRL := &orderTrackingLimiter{order: &callOrder, slot: 1}
-		clientRL := &orderTrackingLimiter{order: &callOrder, slot: 2}
-		cb := NewCircuitBreakerCount(5, 1, 30*time.Second)
+	t.Run("execution order: circuit breaker then request RL then client RL", func(t *testing.T) {
+		var reqRLSlot, clientRLSlot atomic.Int32
+		var seq atomic.Int32
 
-		c := dcnl().SetBaseURL(ts.URL).SetRateLimiter(clientRL).SetCircuitBreaker(cb)
+		cb := NewCircuitBreakerCount(5, 1, 30*time.Second)
+		c := dcnl().SetBaseURL(ts.URL).SetCircuitBreaker(cb)
+
+		reqRL := &orderTrackingLimiter{order: &seq, slot: 1, slotStore: &reqRLSlot}
+		clientRL := &orderTrackingLimiter{order: &seq, slot: 2, slotStore: &clientRLSlot}
+		c.SetRateLimiter(clientRL)
 
 		resp, err := c.R().SetRateLimiter(reqRL).Get(ts.URL)
 		assertNil(t, err)
 		assertEqual(t, http.StatusOK, resp.StatusCode())
+
+		assertEqual(t, int32(1), reqRLSlot.Load(), "request RL should be called second")
+		assertEqual(t, int32(2), clientRLSlot.Load(), "client RL should be called third")
 	})
 
-	t.Run("circuit breaker open does not consume rate limiter when CB is checked after", func(t *testing.T) {
-		clientRL := NewRateLimitTokenBucket(1, 1)
-		cb := NewCircuitBreakerCount(1, 1, 30*time.Second)
+	t.Run("circuit breaker open prevents rate limiter Allow calls", func(t *testing.T) {
+		var clientRLCalls, reqRLCalls atomic.Int32
+		clientRL := &trackingLimiter{allow: true, calls: &clientRLCalls}
+		reqRL := &trackingLimiter{allow: true, calls: &reqRLCalls}
 
 		server500 := createTestServer(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
 		})
 		defer server500.Close()
 
+		cb := NewCircuitBreakerCount(1, 1, 30*time.Second)
 		c := dcnl().SetBaseURL(server500.URL).SetRateLimiter(clientRL).SetCircuitBreaker(cb)
 
-		_, _ = c.R().Get(server500.URL)
+		_, _ = c.R().SetRateLimiter(reqRL).Get(server500.URL)
+		clientCallsAfterFirst := clientRLCalls.Load()
+		reqCallsAfterFirst := reqRLCalls.Load()
+		assertEqual(t, int32(1), clientCallsAfterFirst, "client RL should be called once on first request")
+		assertEqual(t, int32(1), reqCallsAfterFirst, "request RL should be called once on first request")
 
-		_, err := c.R().Get(server500.URL)
+		_, err := c.R().SetRateLimiter(reqRL).Get(server500.URL)
 		assertErrorIs(t, ErrCircuitBreakerOpen, err)
+		assertEqual(t, clientCallsAfterFirst, clientRLCalls.Load(), "client RL Allow must not be called when CB is open")
+		assertEqual(t, reqCallsAfterFirst, reqRLCalls.Load(), "request RL Allow must not be called when CB is open")
 	})
 
 	t.Run("context cancellation during rate limit wait", func(t *testing.T) {
@@ -556,12 +570,16 @@ func (l *trackingLimiter) Allow(ctx context.Context) error {
 }
 
 type orderTrackingLimiter struct {
-	order *atomic.Int32
-	slot  int32
+	order     *atomic.Int32
+	slot      int32
+	slotStore *atomic.Int32
 }
 
 func (l *orderTrackingLimiter) Allow(_ context.Context) error {
-	l.order.Store(l.slot)
+	n := l.order.Add(1)
+	if l.slotStore != nil {
+		l.slotStore.Store(n)
+	}
 	return nil
 }
 

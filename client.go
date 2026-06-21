@@ -2457,6 +2457,15 @@ func (c *Client) cbRequestError() {
 // Executes method executes the given `Request` object and returns
 // response or error.
 func (c *Client) execute(req *Request) (*Response, error) {
+	if c.circuitBreaker != nil {
+		if err := c.circuitBreaker.Allow(); err != nil {
+			if cbo, ok := c.circuitBreaker.(CircuitBreakerObserver); ok {
+				cbo.RunOnTriggerHooks(req, err)
+			}
+			return nil, err
+		}
+	}
+
 	reqRL := req.rateLimiter
 	clientRL := c.RateLimiter()
 
@@ -2478,15 +2487,6 @@ func (c *Client) execute(req *Request) (*Response, error) {
 
 	if clientRL != nil {
 		if err := callRateLimiter(clientRL, req.Context(), req.rlSnapshot.Client); err != nil {
-			return nil, err
-		}
-	}
-
-	if c.circuitBreaker != nil {
-		if err := c.circuitBreaker.Allow(); err != nil {
-			if cbo, ok := c.circuitBreaker.(CircuitBreakerObserver); ok {
-				cbo.RunOnTriggerHooks(req, err)
-			}
 			return nil, err
 		}
 	}

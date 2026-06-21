@@ -2462,20 +2462,14 @@ func (c *Client) execute(req *Request) (*Response, error) {
 	hasAnyRL := clientRL != nil || requestRL != nil
 
 	var snapshot *RateLimitSnapshot
+	var rateLimitErr error
 	if hasAnyRL {
 		snapshot = &RateLimitSnapshot{}
-		if clientRL != nil {
-			snapshot.Client = &RateLimitStats{}
-		}
-		if requestRL != nil {
-			snapshot.Request = &RateLimitStats{}
-		}
+		rateLimitErr = c.applyRateLimiters(req, clientRL, requestRL, snapshot)
 	}
 
-	if hasAnyRL {
-		if rateLimitErr := c.applyRateLimiters(req, clientRL, requestRL, snapshot); rateLimitErr != nil {
-			return nil, rateLimitErr
-		}
+	if rateLimitErr != nil {
+		return nil, rateLimitErr
 	}
 
 	if c.circuitBreaker != nil {
@@ -2557,26 +2551,32 @@ func (c *Client) execute(req *Request) (*Response, error) {
 }
 
 func (c *Client) applyRateLimiters(req *Request, clientRL, requestRL RateLimiter, snapshot *RateLimitSnapshot) error {
-	if requestRL != nil {
+	activeRL := requestRL
+	if activeRL != nil {
+		snapshot.Request = &RateLimitStats{}
 		start := time.Now()
-		err := requestRL.Allow(req.Context())
+		err := activeRL.Allow(req.Context())
 		elapsed := time.Since(start)
 		if err != nil {
 			snapshot.Request.recordReject()
 			return err
 		}
 		snapshot.Request.recordWait(elapsed)
+		return nil
 	}
 
-	if clientRL != nil {
+	activeRL = clientRL
+	if activeRL != nil {
+		snapshot.Client = &RateLimitStats{}
 		start := time.Now()
-		err := clientRL.Allow(req.Context())
+		err := activeRL.Allow(req.Context())
 		elapsed := time.Since(start)
 		if err != nil {
 			snapshot.Client.recordReject()
 			return err
 		}
 		snapshot.Client.recordWait(elapsed)
+		return nil
 	}
 
 	return nil

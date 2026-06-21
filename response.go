@@ -30,6 +30,11 @@ type Response struct {
 	// middleware execution errors
 	CascadeError error
 
+	// RateLimit field contains the rate limiting snapshot for this request
+	// if any rate limiter was configured at client or request level.
+	// It is nil when no rate limiter is in use.
+	RateLimit *RateLimitSnapshot
+
 	bodyBytes  []byte
 	size       int64
 	receivedAt time.Time

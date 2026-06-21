@@ -108,6 +108,7 @@ type Request struct {
 	unescapeQueryParams  bool
 	multipartErrChan     chan error
 	multipartCancelFunc  context.CancelFunc
+	rateLimiter          RateLimiter
 }
 
 // SetCorrelationID method is used to set the correlation ID for the request
@@ -1306,6 +1307,30 @@ func (r *Request) SetMethodDeleteAllowPayload(allow bool) *Request {
 // Then log the label along with time duration and method to get better insights into the request lifecycle.
 func (r *Request) SetLabel(label string) *Request {
 	r.Label = label
+	return r
+}
+
+// RateLimiter method returns the [RateLimiter] configured on the request, or nil if none is set.
+func (r *Request) RateLimiter() RateLimiter {
+	return r.rateLimiter
+}
+
+// SetRateLimiter method sets the [RateLimiter] on the request. The rate limiter is consulted
+// before the request is sent; if it returns an error the request is aborted with that error.
+// When a request-level rate limiter is set, it takes priority over the client-level rate limiter;
+// however, both rate limiters are consulted and must allow the request before it proceeds.
+//
+// Use [NewRateLimitTokenBucket] to create a standard token-bucket limiter,
+// [NewRateLimitSlidingWindow] for sliding-window semantics, or supply any
+// implementation of the [RateLimiter] interface for custom strategies.
+//
+// For example, to allow at most 10 requests per second with a burst of 5 for this request:
+//
+//	client.R().SetRateLimiter(resty.NewRateLimitTokenBucket(10, 5)).Get("/api/data")
+//
+// Pass nil to remove a previously configured request-level rate limiter.
+func (r *Request) SetRateLimiter(l RateLimiter) *Request {
+	r.rateLimiter = l
 	return r
 }
 

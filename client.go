@@ -2457,9 +2457,24 @@ func (c *Client) cbRequestError() {
 // Executes method executes the given `Request` object and returns
 // response or error.
 func (c *Client) execute(req *Request) (*Response, error) {
-	if c.RateLimiter() != nil {
-		if err := c.RateLimiter().Allow(req.Context()); err != nil {
-			return nil, err
+	clientRL := c.RateLimiter()
+	requestRL := req.RateLimiter()
+	hasAnyRL := clientRL != nil || requestRL != nil
+
+	var snapshot *RateLimitSnapshot
+	if hasAnyRL {
+		snapshot = &RateLimitSnapshot{}
+		if clientRL != nil {
+			snapshot.Client = &RateLimitStats{}
+		}
+		if requestRL != nil {
+			snapshot.Request = &RateLimitStats{}
+		}
+	}
+
+	if hasAnyRL {
+		if rateLimitErr := c.applyRateLimiters(req, clientRL, requestRL, snapshot); rateLimitErr != nil {
+			return nil, rateLimitErr
 		}
 	}
 
@@ -2491,6 +2506,9 @@ func (c *Client) execute(req *Request) (*Response, error) {
 	}
 
 	response := &Response{Request: req, RawResponse: resp}
+	if hasAnyRL {
+		response.RateLimit = snapshot
+	}
 	response.setReceivedAt()
 	if err != nil {
 		c.cbRequestError()
@@ -2536,6 +2554,32 @@ func (c *Client) execute(req *Request) (*Response, error) {
 	}
 
 	return response, response.wrapError(nil, false)
+}
+
+func (c *Client) applyRateLimiters(req *Request, clientRL, requestRL RateLimiter, snapshot *RateLimitSnapshot) error {
+	if requestRL != nil {
+		start := time.Now()
+		err := requestRL.Allow(req.Context())
+		elapsed := time.Since(start)
+		if err != nil {
+			snapshot.Request.recordReject()
+			return err
+		}
+		snapshot.Request.recordWait(elapsed)
+	}
+
+	if clientRL != nil {
+		start := time.Now()
+		err := clientRL.Allow(req.Context())
+		elapsed := time.Since(start)
+		if err != nil {
+			snapshot.Client.recordReject()
+			return err
+		}
+		snapshot.Client.recordWait(elapsed)
+	}
+
+	return nil
 }
 
 // getting TLS client config if not exists then create one

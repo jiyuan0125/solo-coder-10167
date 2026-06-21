@@ -273,3 +273,29 @@ func (l *RateLimitSlidingWindow) Allow(ctx context.Context) error {
 		}
 	}
 }
+
+type (
+	RateLimitStats struct {
+		WaitCount         int
+		RejectCount       int
+		MaxWaitDuration   time.Duration
+		TotalWaitDuration time.Duration
+	}
+
+	RateLimitSnapshot struct {
+		Client  *RateLimitStats
+		Request *RateLimitStats
+	}
+)
+
+func (s *RateLimitStats) recordWait(d time.Duration) {
+	s.WaitCount++
+	s.TotalWaitDuration += d
+	if d > s.MaxWaitDuration {
+		s.MaxWaitDuration = d
+	}
+}
+
+func (s *RateLimitStats) recordReject() {
+	s.RejectCount++
+}

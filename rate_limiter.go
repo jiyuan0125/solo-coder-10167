@@ -18,6 +18,31 @@ import (
 // implementation rejects the request for any other reason.
 var ErrRateLimitExceeded = errors.New("resty: rate limit exceeded")
 
+type RateLimiterWaitStats struct {
+	WaitCount     int
+	MaxWait       time.Duration
+	CumulativeWait time.Duration
+}
+
+type RateLimiterSnapshot struct {
+	Client  *RateLimiterWaitStats
+	Request *RateLimiterWaitStats
+}
+
+func callRateLimiter(rl RateLimiter, ctx context.Context, stats *RateLimiterWaitStats) error {
+	before := time.Now()
+	err := rl.Allow(ctx)
+	waited := time.Since(before)
+	if err != nil || waited > 0 {
+		stats.WaitCount++
+		if waited > stats.MaxWait {
+			stats.MaxWait = waited
+		}
+		stats.CumulativeWait += waited
+	}
+	return err
+}
+
 // RateLimiter is the interface that wraps the rate limiting behavior used by
 // [Client]. Implement this interface to provide custom rate limiting strategies.
 // The [Client] calls [RateLimiter.Allow] before every request; if it returns

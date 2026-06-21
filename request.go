@@ -108,6 +108,8 @@ type Request struct {
 	unescapeQueryParams  bool
 	multipartErrChan     chan error
 	multipartCancelFunc  context.CancelFunc
+	rateLimiter          RateLimiter
+	rlSnapshot           *RateLimiterSnapshot
 }
 
 // SetCorrelationID method is used to set the correlation ID for the request
@@ -1309,6 +1311,15 @@ func (r *Request) SetLabel(label string) *Request {
 	return r
 }
 
+func (r *Request) SetRateLimiter(l RateLimiter) *Request {
+	r.rateLimiter = l
+	return r
+}
+
+func (r *Request) RateLimiter() RateLimiter {
+	return r.rateLimiter
+}
+
 // TraceInfo method returns trace information for the request.
 // If either [Client.SetTrace] or [Request.SetTrace] has not been enabled
 // before the request is made, an empty [resty.TraceInfo] object is returned.
@@ -1489,7 +1500,7 @@ func (r *Request) Execute(method, url string) (res *Response, err error) {
 	}
 
 	isInvalidRequestErr := false
-	// first attempt + retry count = total attempts
+	isRateLimitErr := false
 	for i := 0; i <= r.RetryCount; i++ {
 		r.Attempt++
 		err = nil
@@ -1499,6 +1510,10 @@ func (r *Request) Execute(method, url string) (res *Response, err error) {
 			if irErr, ok := err.(*invalidRequestError); ok {
 				err = irErr.Err
 				isInvalidRequestErr = true
+				break
+			}
+			if errors.Is(err, ErrRateLimitExceeded) {
+				isRateLimitErr = true
 				break
 			}
 			if r.Context().Err() != nil {
@@ -1587,13 +1602,15 @@ func (r *Request) Execute(method, url string) (res *Response, err error) {
 
 	r.IsDone = true
 
-	if isInvalidRequestErr {
+	if isInvalidRequestErr || isRateLimitErr {
 		r.client.onInvalidHooks(r, err)
 	} else {
 		r.client.onErrorHooks(r, res, err)
 	}
 
-	r.sendLoadBalancerFeedback(res, err)
+	if !isRateLimitErr {
+		r.sendLoadBalancerFeedback(res, err)
+	}
 	backToBufPool(r.bodyBuf)
 	return
 }

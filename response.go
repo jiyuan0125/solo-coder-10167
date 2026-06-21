@@ -26,9 +26,9 @@ type Response struct {
 	RawResponse *http.Response
 	IsRead      bool
 
-	// CascadeError field used to cascade the response processing and
-	// middleware execution errors
 	CascadeError error
+
+	RateLimiterSnapshot *RateLimiterSnapshot
 
 	bodyBytes  []byte
 	size       int64

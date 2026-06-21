@@ -2457,8 +2457,27 @@ func (c *Client) cbRequestError() {
 // Executes method executes the given `Request` object and returns
 // response or error.
 func (c *Client) execute(req *Request) (*Response, error) {
-	if c.RateLimiter() != nil {
-		if err := c.RateLimiter().Allow(req.Context()); err != nil {
+	reqRL := req.rateLimiter
+	clientRL := c.RateLimiter()
+
+	if req.rlSnapshot == nil && (reqRL != nil || clientRL != nil) {
+		req.rlSnapshot = &RateLimiterSnapshot{}
+		if clientRL != nil {
+			req.rlSnapshot.Client = &RateLimiterWaitStats{}
+		}
+		if reqRL != nil {
+			req.rlSnapshot.Request = &RateLimiterWaitStats{}
+		}
+	}
+
+	if reqRL != nil {
+		if err := callRateLimiter(reqRL, req.Context(), req.rlSnapshot.Request); err != nil {
+			return nil, err
+		}
+	}
+
+	if clientRL != nil {
+		if err := callRateLimiter(clientRL, req.Context(), req.rlSnapshot.Client); err != nil {
 			return nil, err
 		}
 	}
@@ -2485,19 +2504,17 @@ func (c *Client) execute(req *Request) (*Response, error) {
 
 	req.StartTime = time.Now()
 	resp, err := c.Client().Do(req.withTimeout())
-	// Cancel multipart context for io.Copy to stop reading/writing further
 	if req.isMultiPart && req.multipartCancelFunc != nil {
 		req.multipartCancelFunc()
 	}
 
-	response := &Response{Request: req, RawResponse: resp}
+	response := &Response{Request: req, RawResponse: resp, RateLimiterSnapshot: req.rlSnapshot}
 	response.setReceivedAt()
 	if err != nil {
 		c.cbRequestError()
 		return response, err
 	}
 	if req.isMultiPart && req.multipartErrChan != nil {
-		// read all multipart errors from channel
 		for err = range req.multipartErrChan {
 			response.CascadeError = wrapErrors(err, response.CascadeError)
 		}
@@ -2528,7 +2545,6 @@ func (c *Client) execute(req *Request) (*Response, error) {
 
 	debugLogger(c, response)
 
-	// Apply Response middleware
 	for _, f := range c.responseMiddlewares() {
 		if err = f(c, response); err != nil {
 			response.CascadeError = wrapErrors(err, response.CascadeError)

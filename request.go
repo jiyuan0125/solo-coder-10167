@@ -1614,7 +1614,7 @@ func (r *Request) Execute(method, url string) (res *Response, err error) {
 
 	if isInvalidRequestErr {
 		r.client.onInvalidHooks(r, err)
-	} else {
+	} else if !errors.Is(err, ErrRateLimitExceeded) {
 		r.client.onErrorHooks(r, res, err)
 	}
 
